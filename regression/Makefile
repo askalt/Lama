@@ -1,6 +1,7 @@
 TESTS=$(sort $(basename $(wildcard test*.lama)))
 
 LAMAC=../src/lamac
+BYTERUN=../byterun/byterun
 
 .PHONY: check $(TESTS)
 
@@ -11,6 +12,8 @@ $(TESTS): %: %.lama
 	cat $@.input | LAMA=../runtime $(LAMAC) -i $< > $@.log && diff $@.log orig/$@.log
 	cat $@.input | LAMA=../runtime $(LAMAC) -ds -s $< > $@.log && diff $@.log orig/$@.log
 	LAMA=../runtime $(LAMAC) $< && cat $@.input | ./$@ > $@.log && diff $@.log orig/$@.log
+	LAMA=../runtime $(LAMAC) -b $@.lama
+	cat $@.input | $(BYTERUN) -i $@.bc > $@.log && diff $@.log orig/$@.log
 
 clean:
 	$(RM) test*.log *.s *~ $(TESTS) *.i

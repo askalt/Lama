@@ -9,8 +9,5 @@ utils.o: utils.c
 build: byterun.o utils.o
 	$(CC) -m32 -g -o byterun byterun.o utils.o  ../runtime/runtime.a
 
-run: build
-	./byterun interpret sample.bc #main.bc
-
 clean:
 	$(RM) *.a *.o *~
