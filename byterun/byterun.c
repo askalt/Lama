@@ -9,7 +9,6 @@
 #endif
 
 #include "../runtime/runtime.h"
-#include "utils.h"
 
 #include <errno.h>
 #include <malloc.h>
@@ -433,8 +432,65 @@ int binop(int op_code, int a, int b) {
   }
 }
 
+extern size_t __gc_stack_top, __gc_stack_bottom;
+
+void reverse(int *l, int *r) {
+  --r;
+  while ((int)l < (int)r) {
+    int *tmp = *l;
+    *l = *r;
+    *r = tmp;
+    ++l;
+    --r;
+  }
+}
+
 // Operands stack size.
 const int OP_STACK_SIZE = 100000;
+
+void init_op_stack() {
+  __gc_stack_top = __gc_stack_bottom = malloc(sizeof(int) * OP_STACK_SIZE);
+  if (__gc_stack_top == NULL) {
+    failure("unable to allocate memory for stack ");
+  }
+}
+
+void push(int e) {
+  if (__gc_stack_top - __gc_stack_bottom > OP_STACK_SIZE * sizeof(int)) {
+    failure("stack overflow ");
+  }
+  *(int *)__gc_stack_top = e;
+  __gc_stack_top += sizeof(int);
+}
+
+void pushn(int n) {
+  if (__gc_stack_top - __gc_stack_bottom > (OP_STACK_SIZE - n) * sizeof(int)) {
+    failure("stack overflow ");
+  }
+  __gc_stack_top += sizeof(int) * n;
+}
+
+void popn(int n) {
+  if (__gc_stack_top - __gc_stack_bottom < n * sizeof(int)) {
+    failure("stack is empty ");
+  }
+  __gc_stack_top -= sizeof(int) * n;
+}
+
+int pop() {
+  if (__gc_stack_top == __gc_stack_bottom) {
+    failure("stack is empty ");
+  }
+  __gc_stack_top -= sizeof(int);
+  return *(int *)__gc_stack_top;
+}
+
+int top() {
+  if (__gc_stack_top == __gc_stack_bottom) {
+    failure("stack is empty ");
+  }
+  return *(int *)(__gc_stack_top - sizeof(int));
+}
 
 // Helper buffer size.
 const int BUFF_SIZE = 2048;
@@ -464,12 +520,12 @@ Frame *frame_new(int *ebp, int nArgs, int nLocal, int ret_offset,
   return ret;
 }
 
-int *lda(Frame *frame, stack *op_stack, int typ, int index) {
+int *lda(Frame *frame, int typ, int index) {
   debug("\nlda(%d, %d)\n", typ, index);
   switch (typ) {
   case 0:
     // Global variable. Take from the stack beginning.
-    return &op_stack->bp[index];
+    return __gc_stack_bottom + sizeof(int) * index;
   case 1:
     // Local variable. It located immediately after ebp.
     return &frame->ebp[index];
@@ -493,18 +549,18 @@ void interpret(bytefile *bf, char *filename) {
   // Init Lama runtime.
   __init();
 
+  // Init operand stack.
+  init_op_stack();
+
   char *ip = bf->code_ptr;
   int *buf = malloc(sizeof(int) * BUFF_SIZE);
-  stack *op_stack = stack_new(OP_STACK_SIZE);
 
   int global_cnt = bf->global_area_size;
 
   // Reserve place for global variables.
-  for (int i = 0; i < global_cnt; ++i) {
-    push(op_stack, 0);
-  }
+  pushn(global_cnt);
 
-  Frame *current = frame_new(&op_stack->bp[op_stack->sz], 0, 0, 0, 0, NULL);
+  Frame *current = frame_new(__gc_stack_top, 0, 0, 0, 0, NULL);
 
   for (;;) {
 #ifdef DEBUG_PRINT
@@ -530,41 +586,41 @@ void interpret(bytefile *bf, char *filename) {
 
     case BINOP:
       debug("BINOP\t%s", ops[l - 1]);
-      int b = pop(op_stack);
-      int a = pop(op_stack);
-      push(op_stack, BOX(binop(l - 1, UNBOX(a), UNBOX(b))));
+      int b = pop();
+      int a = pop();
+      push(BOX(binop(l - 1, UNBOX(a), UNBOX(b))));
       break;
 
     case LD: {
       debug("LD");
-      int *src = lda(current, op_stack, l, INT);
-      push(op_stack, *src);
+      int *src = lda(current, l, INT);
+      push(*src);
       break;
     }
 
     case LDA: {
       debug("LDA");
-      int addr = lda(current, op_stack, l, INT);
-      push(op_stack, addr);
-      push(op_stack, addr);
+      int addr = lda(current, l, INT);
+      push(addr);
+      push(addr);
       break;
     }
 
     case ST: {
       debug("ST");
-      int *dst = lda(current, op_stack, l, INT);
+      int *dst = lda(current, l, INT);
       debug("offset: %d\n", dst - op_stack->bp);
-      *dst = top(op_stack);
+      *dst = top();
       break;
     }
 
     case PATT: {
       debug("PATT %s", pats[l]);
-      int t = pop(op_stack);
+      int t = pop();
       int res = 0;
       switch (l) {
       case 0: {
-        int e = pop(op_stack);
+        int e = pop();
         res = Bstring_patt(t, e);
         break;
       }
@@ -587,7 +643,7 @@ void interpret(bytefile *bf, char *filename) {
         res = Bclosure_tag_patt(t);
         break;
       }
-      push(op_stack, res);
+      push(res);
       break;
     }
 
@@ -596,13 +652,13 @@ void interpret(bytefile *bf, char *filename) {
       case CONST: {
         int val = INT;
         debug("CONST\t%d", val);
-        push(op_stack, BOX(val));
+        push(BOX(val));
         break;
       }
       case STRING: {
         char *str = NSTRING;
         debug("STRING\t%s", str);
-        push(op_stack, Bstring(str));
+        push(Bstring(str));
         break;
       }
       case SEXP: {
@@ -610,27 +666,25 @@ void interpret(bytefile *bf, char *filename) {
         int h = hash(name);
         int nArgs = INT;
         debug("SEXP\t%s %d", name, nArgs);
-        int Bsexp = call_Bsexp(nArgs, h, op_stack->bp + op_stack->sz - 1);
-        for (int _ = 0; _ < nArgs; ++_) {
-          pop(op_stack);
-        }
-        push(op_stack, Bsexp);
+        int Bsexp = call_Bsexp(nArgs, h, __gc_stack_top - sizeof(int));
+        popn(nArgs);
+        push(Bsexp);
         break;
       }
       case STI: {
-        int val = pop(op_stack);
-        int *addr = pop(op_stack);
+        int val = pop();
+        int *addr = pop();
         *addr = val;
         debug("STI");
-        push(op_stack, val);
+        push(val);
         break;
       }
       case STA: {
         debug("STA");
-        int v = pop(op_stack);
-        int i = pop(op_stack);
-        int x = pop(op_stack);
-        push(op_stack, Bsta(v, i, x));
+        int v = pop();
+        int i = pop();
+        int x = pop();
+        push(Bsta(v, i, x));
         break;
       }
       case JMP: {
@@ -646,22 +700,21 @@ void interpret(bytefile *bf, char *filename) {
         debug((l == 6) ? "END" : "RET");
 
         // Remember return value.
-        int ret = pop(op_stack);
+        int ret = pop();
 
         // Remove local variables from the stack.
-        for (int _ = 0; _ < current->nLocal; ++_)
-          pop(op_stack);
+        popn(current->nLocal);
+
         // Remove args from the stack.
-        for (int _ = 0; _ < current->nArgs; ++_)
-          pop(op_stack);
+        popn(current->nArgs);
 
         // Remove closure from the stack if need.
         if (current->is_closure) {
-          pop(op_stack);
+          pop();
         }
 
         // Push return value.
-        push(op_stack, ret);
+        push(ret);
 
         ip = bf->code_ptr + current->ret_offset;
         current = current->prev;
@@ -672,34 +725,34 @@ void interpret(bytefile *bf, char *filename) {
       }
       case DROP: {
         debug("DROP");
-        pop(op_stack);
+        pop();
         break;
       }
       case DUP: {
         debug("DUP");
-        int t = top(op_stack);
-        push(op_stack, t);
+        int t = top();
+        push(t);
         break;
       }
       case SWAP: {
         debug("SWAP");
-        int a = pop(op_stack);
-        int b = pop(op_stack);
-        push(op_stack, a);
-        push(op_stack, b);
+        int a = pop();
+        int b = pop();
+        push(a);
+        push(b);
         break;
       }
       case ELEM: {
         debug("ELEM");
-        int index = pop(op_stack);
-        int ar = pop(op_stack);
-        push(op_stack, Belem(ar, index));
+        int index = pop();
+        int ar = pop();
+        push(Belem(ar, index));
         break;
       }
       case CJMPz: {
         int addr = INT;
         debug("CJMPz\t0x%.8x", addr);
-        int cond = UNBOX(pop(op_stack));
+        int cond = UNBOX(pop());
         if (!cond) {
           ip = bf->code_ptr + addr;
         }
@@ -708,7 +761,7 @@ void interpret(bytefile *bf, char *filename) {
       case CJMPnz: {
         int addr = INT;
         debug("CJMPnz\t0x%.8x", addr);
-        int cond = UNBOX(pop(op_stack));
+        int cond = UNBOX(pop());
         if (cond) {
           ip = bf->code_ptr + addr;
         }
@@ -722,8 +775,7 @@ void interpret(bytefile *bf, char *filename) {
 
         // Reserve place for local args on the stack.
         current->nLocal = nLocal;
-        for (int _ = 0; _ < nLocal; ++_)
-          push(op_stack, 0);
+        pushn(nLocal);
         break;
       }
       case CLOSURE: {
@@ -736,33 +788,26 @@ void interpret(bytefile *bf, char *filename) {
         for (int i = 0; i < n; ++i) {
           int typ = BYTE;
           int index = INT;
-          buf[i] = *lda(current, op_stack, typ, index);
+          buf[i] = *lda(current, typ, index);
         }
         int closure = call_Bclosure(n, addr, buf + n - 1);
-        push(op_stack, closure);
+        push(closure);
         break;
       }
       case CALLC: {
         int nArgs = INT;
         debug("CALLC\t%d", nArgs);
 
-        // Pop arguments for reverse order.
-        for (int i = 0; i < nArgs; ++i) {
-          buf[i] = pop(op_stack);
-        }
+        // Reverse arguments order.
+        reverse(__gc_stack_top - sizeof(nArgs), __gc_stack_top);
 
         // Take closure.
-        int closure = top(op_stack);
+        int closure = *(int *) (__gc_stack_top - sizeof(int) * (nArgs + 1));
         int addr = ((int *)closure)[0];
         int *captured = ((int *)closure) + 1;
 
-        // Push args to the stack.
-        for (int i = 0; i < nArgs; ++i) {
-          push(op_stack, buf[i]);
-        }
-
-        int *ebp = &op_stack->bp[op_stack->sz];
-        current = frame_new(ebp, nArgs, 0, ip - bf->code_ptr, 1, current);
+        current =
+            frame_new(__gc_stack_top, nArgs, 0, ip - bf->code_ptr, 1, current);
         ip = bf->code_ptr + addr;
         break;
       }
@@ -771,18 +816,11 @@ void interpret(bytefile *bf, char *filename) {
         int nArgs = INT;
         debug("CALL\t0x%.8x %d", addr, nArgs);
 
-        // Pop arguments for reverse order.
-        for (int i = 0; i < nArgs; ++i) {
-          buf[i] = pop(op_stack);
-        }
+        // Reverse arguments order.
+        reverse(__gc_stack_top - sizeof(int) * nArgs, __gc_stack_top);
 
-        // Push args to the stack.
-        for (int i = 0; i < nArgs; ++i) {
-          push(op_stack, buf[i]);
-        }
-
-        int *ebp = &op_stack->bp[op_stack->sz];
-        current = frame_new(ebp, nArgs, 0, ip - bf->code_ptr, 0, current);
+        current =
+            frame_new(__gc_stack_top, nArgs, 0, ip - bf->code_ptr, 0, current);
         ip = bf->code_ptr + addr;
         break;
       }
@@ -791,23 +829,23 @@ void interpret(bytefile *bf, char *filename) {
         int nArgs = INT;
         int h = hash(name);
         debug("TAG\t%s %d", name, nArgs);
-        int arg = pop(op_stack);
+        int arg = pop();
         int res = Btag(arg, BOX(h), BOX(nArgs));
-        push(op_stack, res);
+        push(res);
         break;
       }
       case ARRAY: {
         int n = INT;
         debug("ARRAY\t%d", n);
-        int ar = pop(op_stack);
-        push(op_stack, Barray_patt(ar, BOX(n)));
+        int ar = pop();
+        push(Barray_patt(ar, BOX(n)));
         break;
       }
       case FAIL: {
         debug("FAIL");
         int line = INT;
         int col = INT;
-        int a = pop(op_stack);
+        int a = pop();
         Bmatch_failure(a, filename, BOX(line), BOX(col));
         break;
       }
@@ -818,35 +856,35 @@ void interpret(bytefile *bf, char *filename) {
       }
       case LREAD: {
         debug("CALL Lread");
-        push(op_stack, Lread());
+        push(Lread());
         break;
       }
       case LWRITE: {
         debug("CALL Lwrite");
-        int t = pop(op_stack);
-        push(op_stack, Lwrite(t));
+        int t = pop();
+        push(Lwrite(t));
         break;
       }
       case LLENGTH: {
         debug("CALL Llength");
-        int length = Llength(pop(op_stack));
-        push(op_stack, length);
+        int length = Llength(pop());
+        push(length);
         break;
       }
       case LSTRING: {
         debug("CALL Lstring");
-        int str = Lstring(pop(op_stack));
-        push(op_stack, str);
+        int str = Lstring(pop());
+        push(str);
         break;
       }
       case BARRAY: {
         debug("CALL Barray");
         int nArgs = INT;
-        int Barray = call_Barray(nArgs, op_stack->bp + op_stack->sz - 1);
+        int Barray = call_Barray(nArgs, __gc_stack_top - sizeof(int));
         for (int _ = 0; _ < nArgs; ++_) {
-          pop(op_stack);
+          pop();
         }
-        push(op_stack, Barray);
+        push(Barray);
         break;
       }
       default:
@@ -858,7 +896,7 @@ void interpret(bytefile *bf, char *filename) {
   }
 
 stop:
-  free(op_stack);
+  free(__gc_stack_bottom);
   free(buf);
 }
 
