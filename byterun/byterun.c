@@ -27,10 +27,6 @@ typedef struct {
 #define TO_DATA(x) ((data *)((char *)(x) - sizeof(int)))
 #define LEN(x) ((x & 0xFFFFFFF8) >> 3)
 
-// Decode defines.
-#define INT (ip += sizeof(int), *(int *)(ip - sizeof(int)))
-#define BYTE *ip++
-#define NSTRING get_string(bf, INT)
 #define MATCH_FAIL                                                             \
   failure("ERROR: invalid opcode %d-%d at line %d\n", h, l, __LINE__)
 
@@ -80,9 +76,12 @@ enum INSTR {
   LLENGTH,
   LSTRING,
   BARRAY,
+
+  // Fictive instruction to know instructions count.
+  _FINAL,
 };
 
-int get_instr_num(char instr) {
+int decode(char instr) {
   int h = (instr & 0xF0) >> 4, l = instr & 0x0F;
   switch (h) {
   case 15:
@@ -175,6 +174,7 @@ int get_instr_num(char instr) {
 
 /* The unpacked representation of bytecode file */
 typedef struct {
+  int fsize;
   char *string_ptr;     /* A pointer to the beginning of the string table */
   int *public_ptr;      /* A pointer to the beginning of publics table    */
   char *code_ptr;       /* A pointer to the bytecode itself               */
@@ -196,6 +196,25 @@ char *get_public_name(bytefile *f, int i) {
 /* Gets an offset for a publie symbol */
 int get_public_offset(bytefile *f, int i) { return f->public_ptr[i * 2 + 1]; }
 
+int next_int(char **ip) {
+  *ip += sizeof(int);
+  return *(int *)(*ip - sizeof(int));
+}
+
+char next_byte(char **ip) {
+  *ip += sizeof(char);
+  return *(char *)(*ip - sizeof(char));
+}
+
+char *next_string(bytefile *bf, char **ip) {
+  int i = next_int(ip);
+  return get_string(bf, i);
+}
+
+#define INT next_int(&ip)
+#define BYTE next_byte(&ip)
+#define NSTRING next_string(bf, &ip)
+
 /* Reads a binary bytecode file by name and unpacks it */
 bytefile *read_file(char *fname) {
   FILE *f = fopen(fname, "rb");
@@ -210,7 +229,7 @@ bytefile *read_file(char *fname) {
     failure("%s\n", strerror(errno));
   }
 
-  file = (bytefile *)malloc(sizeof(int) * 4 + (size = ftell(f)));
+  file = (bytefile *)malloc(sizeof(int) * 5 + (size = ftell(f)));
 
   if (file == 0) {
     failure("*** FAILURE: unable to allocate memory.\n");
@@ -224,6 +243,7 @@ bytefile *read_file(char *fname) {
 
   fclose(f);
 
+  file->fsize = size;
   file->string_ptr =
       &file->buffer[file->public_symbols_number * 2 * sizeof(int)];
   file->public_ptr = (int *)file->buffer;
@@ -233,159 +253,166 @@ bytefile *read_file(char *fname) {
   return file;
 }
 
-/* Disassembles the bytecode pool */
-void disassemble(FILE *f, bytefile *bf) {
-  char *ip = bf->code_ptr;
-  do {
-    char x = BYTE, h = (x & 0xF0) >> 4, l = x & 0x0F;
-
-    fprintf(f, "0x%.8x:\t", ip - bf->code_ptr - 1);
-
-    switch (get_instr_num(x)) {
-    case STOP:
-      goto stop;
-    case BINOP:
-      fprintf(f, "BINOP\t%s", ops[l - 1]);
+int print_insn(FILE *f, bytefile *bf, char **ip) {
+  char x = next_byte(ip);
+  int h = (x & 0xF0) >> 4, l = x & 0x0F;
+  int ins = decode(x);
+  switch (ins) {
+  case STOP:
+    fprintf(f, "STOP");
+    break;
+  case BINOP:
+    fprintf(f, "BINOP\t%s", ops[l - 1]);
+    break;
+  case CONST:
+    fprintf(f, "CONST\t%d", next_int(ip));
+    break;
+  case STRING:
+    fprintf(f, "STRING\t%s", next_string(bf, ip));
+    break;
+  case SEXP:
+    fprintf(f, "SEXP\t%s ", next_string(bf, ip));
+    fprintf(f, "%d", next_int(ip));
+    break;
+  case STI:
+    fprintf(f, "STI");
+    break;
+  case STA:
+    fprintf(f, "STA");
+    break;
+  case JMP:
+    fprintf(f, "JMP\t0x%.8x", next_int(ip));
+    break;
+  case END:
+    fprintf(f, "END");
+    break;
+  case RET:
+    fprintf(f, "RET");
+    break;
+  case DROP:
+    fprintf(f, "DROP");
+    break;
+  case DUP:
+    fprintf(f, "DUP");
+    break;
+  case SWAP:
+    fprintf(f, "SWAP");
+    break;
+  case ELEM:
+    fprintf(f, "ELEM");
+    break;
+  case LD:
+  case LDA:
+  case ST:
+    fprintf(f, "%s\t", lds[h - 2]);
+    switch (l) {
+    case 0:
+      fprintf(f, "G(%d)", next_int(ip));
       break;
-    case CONST:
-      fprintf(f, "CONST\t%d", INT);
+    case 1:
+      fprintf(f, "L(%d)", next_int(ip));
       break;
-    case STRING:
-      fprintf(f, "STRING\t%s", NSTRING);
+    case 2:
+      fprintf(f, "A(%d)", next_int(ip));
       break;
-    case SEXP:
-      fprintf(f, "SEXP\t%s ", NSTRING);
-      fprintf(f, "%d", INT);
-      break;
-    case STI:
-      fprintf(f, "STI");
-      break;
-    case STA:
-      fprintf(f, "STA");
-      break;
-    case JMP:
-      fprintf(f, "JMP\t0x%.8x", INT);
-      break;
-    case END:
-      fprintf(f, "END");
-      break;
-    case RET:
-      fprintf(f, "RET");
-      break;
-    case DROP:
-      fprintf(f, "DROP");
-      break;
-    case DUP:
-      fprintf(f, "DUP");
-      break;
-    case SWAP:
-      fprintf(f, "SWAP");
-      break;
-    case ELEM:
-      fprintf(f, "ELEM");
-      break;
-    case LD:
-    case LDA:
-    case ST:
-      fprintf(f, "%s\t", lds[h - 2]);
-      switch (l) {
-      case 0:
-        fprintf(f, "G(%d)", INT);
-        break;
-      case 1:
-        fprintf(f, "L(%d)", INT);
-        break;
-      case 2:
-        fprintf(f, "A(%d)", INT);
-        break;
-      case 3:
-        fprintf(f, "C(%d)", INT);
-        break;
-      default:
-        MATCH_FAIL;
-      }
-      break;
-    case CJMPz:
-      fprintf(f, "CJMPz\t0x%.8x", INT);
-      break;
-    case CJMPnz:
-      fprintf(f, "CJMPnz\t0x%.8x", INT);
-      break;
-    case BEGIN:
-      fprintf(f, "BEGIN\t%d ", INT);
-      fprintf(f, "%d", INT);
-      break;
-    case CBEGIN:
-      fprintf(f, "CBEGIN\t%d ", INT);
-      fprintf(f, "%d", INT);
-      break;
-    case CLOSURE:
-      fprintf(f, "CLOSURE\t0x%.8x", INT);
-      {
-        int n = INT;
-        for (int i = 0; i < n; i++) {
-          switch (BYTE) {
-          case 0:
-            fprintf(f, "G(%d)", INT);
-            break;
-          case 1:
-            fprintf(f, "L(%d)", INT);
-            break;
-          case 2:
-            fprintf(f, "A(%d)", INT);
-            break;
-          case 3:
-            fprintf(f, "C(%d)", INT);
-            break;
-          default:
-            MATCH_FAIL;
-          }
-        }
-      };
-      break;
-    case CALLC:
-      fprintf(f, "CALLC\t%d", INT);
-      break;
-    case CALL:
-      fprintf(f, "CALL\t0x%.8x ", INT);
-      fprintf(f, "%d", INT);
-      break;
-    case TAG:
-      fprintf(f, "TAG\t%s ", NSTRING);
-      fprintf(f, "%d", INT);
-      break;
-    case ARRAY:
-      fprintf(f, "ARRAY\t%d", INT);
-      break;
-    case FAIL:
-      fprintf(f, "FAIL\t%d", INT);
-      fprintf(f, "%d", INT);
-      break;
-    case LINE:
-      fprintf(f, "LINE\t%d", INT);
-      break;
-    case PATT:
-      fprintf(f, "PATT\t%s", pats[l]);
-      break;
-    case LREAD:
-      fprintf(f, "CALL\tLread");
-      break;
-    case LWRITE:
-      fprintf(f, "CALL\tLwrite");
-      break;
-    case LLENGTH:
-      fprintf(f, "CALL\tLlength");
-      break;
-    case LSTRING:
-      fprintf(f, "CALL\tLstring");
-      break;
-    case BARRAY:
-      fprintf(f, "CALL\tBarray\t%d", INT);
+    case 3:
+      fprintf(f, "C(%d)", next_int(ip));
       break;
     default:
       MATCH_FAIL;
     }
+    break;
+  case CJMPz:
+    fprintf(f, "CJMPz\t0x%.8x", next_int(ip));
+    break;
+  case CJMPnz:
+    fprintf(f, "CJMPnz\t0x%.8x", next_int(ip));
+    break;
+  case BEGIN:
+    fprintf(f, "BEGIN\t%d ", next_int(ip));
+    fprintf(f, "%d", next_int(ip));
+    break;
+  case CBEGIN:
+    fprintf(f, "CBEGIN\t%d ", next_int(ip));
+    fprintf(f, "%d", next_int(ip));
+    break;
+  case CLOSURE:
+    fprintf(f, "CLOSURE\t0x%.8x", next_int(ip));
+    {
+      int n = next_int(ip);
+      for (int i = 0; i < n; i++) {
+        switch (next_byte(ip)) {
+        case 0:
+          fprintf(f, "G(%d)", next_int(ip));
+          break;
+        case 1:
+          fprintf(f, "L(%d)", next_int(ip));
+          break;
+        case 2:
+          fprintf(f, "A(%d)", next_int(ip));
+          break;
+        case 3:
+          fprintf(f, "C(%d)", next_int(ip));
+          break;
+        default:
+          MATCH_FAIL;
+        }
+      }
+    };
+    break;
+  case CALLC:
+    fprintf(f, "CALLC\t%d", next_int(ip));
+    break;
+  case CALL:
+    fprintf(f, "CALL\t0x%.8x ", next_int(ip));
+    fprintf(f, "%d", next_int(ip));
+    break;
+  case TAG:
+    fprintf(f, "TAG\t%s ", next_string(bf, ip));
+    fprintf(f, "%d", next_int(ip));
+    break;
+  case ARRAY:
+    fprintf(f, "ARRAY\t%d", next_int(ip));
+    break;
+  case FAIL:
+    fprintf(f, "FAIL\t%d", next_int(ip));
+    fprintf(f, "%d", next_int(ip));
+    break;
+  case LINE:
+    fprintf(f, "LINE\t%d", next_int(ip));
+    break;
+  case PATT:
+    fprintf(f, "PATT\t%s", pats[l]);
+    break;
+  case LREAD:
+    fprintf(f, "CALL\tLread");
+    break;
+  case LWRITE:
+    fprintf(f, "CALL\tLwrite");
+    break;
+  case LLENGTH:
+    fprintf(f, "CALL\tLlength");
+    break;
+  case LSTRING:
+    fprintf(f, "CALL\tLstring");
+    break;
+  case BARRAY:
+    fprintf(f, "CALL\tBarray\t%d", next_int(ip));
+    break;
+  default:
+    MATCH_FAIL;
+  }
+  return ins;
+}
 
+/* Disassembles the bytecode pool */
+void disassemble(FILE *f, bytefile *bf) {
+  char *ip = bf->code_ptr;
+  do {
+    fprintf(f, "0x%.8x:\t", ip - bf->code_ptr);
+    if (print_insn(f, bf, &ip) == STOP) {
+      goto stop;
+    }
     fprintf(f, "\n");
   } while (1);
 stop:
@@ -407,6 +434,175 @@ void dump_file(FILE *f, bytefile *bf) {
 
   fprintf(f, "Code:\n");
   disassemble(f, bf);
+}
+
+int compare_params(bytefile *bf, char *ip1, char *ip2) {
+  int bc1 = next_byte(&ip1);
+  int bc2 = next_byte(&ip2);
+
+  int h1 = (bc1 & 0xF0) >> 4, l1 = bc1 & 0x0F;
+  int h2 = (bc2 & 0xF0) >> 4, l2 = bc2 & 0x0F;
+
+  int insn1 = decode(bc1);
+  int insn2 = decode(bc2);
+  assert(insn1 == insn2);
+  switch (insn1) {
+  case BINOP:
+  case PATT:
+    return l1 == l2;
+
+  case LD:
+  case LDA:
+  case ST:
+    return l1 == l2 && next_int(&ip1) == next_int(&ip2);
+
+  case LINE:
+  case ARRAY:
+  case JMP:
+  case CJMPz:
+  case CJMPnz:
+  case CONST:
+    return next_int(&ip1) == next_int(&ip2);
+
+  case STRING:
+    return next_string(bf, &ip1) == next_string(bf, &ip2);
+
+  case TAG:
+  case SEXP: {
+    if (next_string(bf, &ip1) != next_string(bf, &ip2))
+      return 0;
+    return next_int(&ip1) == next_int(&ip2);
+  }
+
+  case FAIL:
+  case CALL:
+  case CALLC:
+  case BEGIN:
+  case CBEGIN:
+    if (next_int(&ip1) != next_int(&ip2))
+      return 0;
+    return next_int(&ip1) == next_int(&ip2);
+
+  case CLOSURE: {
+    int n1 = next_int(&ip1);
+    int n2 = next_int(&ip2);
+    if (n1 != n2)
+      return 0;
+    for (int _ = 0; _ < n1; ++_) {
+      int ty1 = next_byte(&ip1);
+      int ty2 = next_byte(&ip2);
+      if (ty1 != ty2)
+        return 0;
+      if (next_int(&ip1) != next_int(&ip2))
+        return 0;
+    }
+    return 1;
+  }
+
+  case STI:
+  case STA:
+  case END:
+  case RET:
+  case DROP:
+  case DUP:
+  case SWAP:
+  case ELEM:
+  case LREAD:
+  case LWRITE:
+  case LLENGTH:
+  case LSTRING:
+  case BARRAY:
+    return 1;
+  }
+}
+
+int *occ_number = NULL;
+int compare_occs(const void *el, const void *er) {
+  int il = *(int *)el;
+  int ir = *(int *)er;
+  return occ_number[ir] - occ_number[il];
+}
+
+/* Analyzes the frequency of occurrences of byte codes  */
+void frequency_analyze(bytefile *bf) {
+#ifndef DEBUG_PRINT
+  FILE *nul = fopen("/dev/null", "w");
+#else
+  FILE *nul = stdout;
+#endif
+
+#define UNDEFINED 0xffffffff
+  // Last unique instruction i offset.
+  static int last_inst_offset[_FINAL];
+  memset(last_inst_offset, UNDEFINED, sizeof(last_inst_offset));
+
+  // Link to the previous unique instruction.
+  int *previous_instr = malloc(sizeof(int) * bf->fsize);
+  memset(previous_instr, UNDEFINED, sizeof(int) * bf->fsize);
+
+  // Number of occurrences for instruction with specified offset.
+  occ_number = malloc(sizeof(int) * bf->fsize);
+  memset(occ_number, 0, sizeof(int) * bf->fsize);
+
+  char *ip = bf->code_ptr;
+  for (;;) {
+    int offset = ip - bf->code_ptr;
+    int insn = print_insn(nul, bf, &ip);
+    if (insn == STOP) {
+      occ_number[offset]++;
+      break;
+    }
+
+    debug("offset: %d\n", offset);
+    debug("insn: %d\n", insn + 1);
+    debug("last_inst_offset: %d\n", last_inst_offset[insn]);
+
+    int primary_offset = last_inst_offset[insn];
+    while (primary_offset != UNDEFINED) {
+      if (compare_params(bf, bf->code_ptr + primary_offset,
+                         bf->code_ptr + offset)) {
+        break;
+      }
+      primary_offset = previous_instr[primary_offset];
+    }
+
+    debug("primary offset: %d\n", primary_offset);
+
+    if (primary_offset == UNDEFINED) {
+      // First instruction like this.
+      previous_instr[offset] = last_inst_offset[insn];
+      last_inst_offset[insn] = offset;
+      primary_offset = offset;
+    }
+
+    occ_number[primary_offset]++;
+
+    debug("occs = %d\n", occ_number[primary_offset]);
+    debug("\n\n");
+  }
+
+  // Sort instructions by frequency.
+  int *offsets = malloc(sizeof(int) * bf->fsize);
+  for (int i = 0; i < bf->fsize; ++i)
+    offsets[i] = i;
+  qsort(offsets, bf->fsize, sizeof(int), compare_occs);
+
+  printf("Bytecodes frequency stats:\n");
+  for (int i = 0; i < bf->fsize; ++i) {
+    int offset = offsets[i];
+    if (occ_number[offset] == 0)
+      continue;
+    printf("#%d\t", occ_number[offset]);
+    char *ip = bf->code_ptr + offset;
+    print_insn(stdout, bf, &ip);
+    printf("\n");
+  }
+
+stop:
+  free(previous_instr);
+  free(occ_number);
+  free(offsets);
+  fclose(nul);
 }
 
 static char *chars =
@@ -620,7 +816,7 @@ void interpret(bytefile *bf, char *filename) {
     char l = x & (0x0F);
     debug("0x%.8x:\n", ip - bf->code_ptr - 1);
 
-    switch (get_instr_num(x)) {
+    switch (decode(x)) {
     case STOP:
       goto stop;
     case BINOP:
@@ -938,6 +1134,8 @@ int main(int argc, char *argv[]) {
     dump_file(stdout, f);
   } else if (!strcmp("-i", op)) {
     interpret(f, filename);
+  } else if (!strcmp("-a", op)) {
+    frequency_analyze(f);
   } else {
     failure("unknown work mode ");
   }
