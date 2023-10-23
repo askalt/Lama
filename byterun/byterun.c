@@ -241,74 +241,52 @@ void disassemble(FILE *f, bytefile *bf) {
 
     fprintf(f, "0x%.8x:\t", ip - bf->code_ptr - 1);
 
-    switch (h) {
-    case 15:
+    switch (get_instr_num(x)) {
+    case STOP:
       goto stop;
-
-    /* BINOP */
-    case 0:
+    case BINOP:
       fprintf(f, "BINOP\t%s", ops[l - 1]);
       break;
-
-    case 1:
-      switch (l) {
-      case 0:
-        fprintf(f, "CONST\t%d", INT);
-        break;
-
-      case 1:
-        fprintf(f, "STRING\t%s", NSTRING);
-        break;
-
-      case 2:
-        fprintf(f, "SEXP\t%s ", NSTRING);
-        fprintf(f, "%d", INT);
-        break;
-
-      case 3:
-        fprintf(f, "STI");
-        break;
-
-      case 4:
-        fprintf(f, "STA");
-        break;
-
-      case 5:
-        fprintf(f, "JMP\t0x%.8x", INT);
-        break;
-
-      case 6:
-        fprintf(f, "END");
-        break;
-
-      case 7:
-        fprintf(f, "RET");
-        break;
-
-      case 8:
-        fprintf(f, "DROP");
-        break;
-
-      case 9:
-        fprintf(f, "DUP");
-        break;
-
-      case 10:
-        fprintf(f, "SWAP");
-        break;
-
-      case 11:
-        fprintf(f, "ELEM");
-        break;
-
-      default:
-        MATCH_FAIL;
-      }
+    case CONST:
+      fprintf(f, "CONST\t%d", INT);
       break;
-
-    case 2:
-    case 3:
-    case 4:
+    case STRING:
+      fprintf(f, "STRING\t%s", NSTRING);
+      break;
+    case SEXP:
+      fprintf(f, "SEXP\t%s ", NSTRING);
+      fprintf(f, "%d", INT);
+      break;
+    case STI:
+      fprintf(f, "STI");
+      break;
+    case STA:
+      fprintf(f, "STA");
+      break;
+    case JMP:
+      fprintf(f, "JMP\t0x%.8x", INT);
+      break;
+    case END:
+      fprintf(f, "END");
+      break;
+    case RET:
+      fprintf(f, "RET");
+      break;
+    case DROP:
+      fprintf(f, "DROP");
+      break;
+    case DUP:
+      fprintf(f, "DUP");
+      break;
+    case SWAP:
+      fprintf(f, "SWAP");
+      break;
+    case ELEM:
+      fprintf(f, "ELEM");
+      break;
+    case LD:
+    case LDA:
+    case ST:
       fprintf(f, "%s\t", lds[h - 2]);
       switch (l) {
       case 0:
@@ -327,115 +305,83 @@ void disassemble(FILE *f, bytefile *bf) {
         MATCH_FAIL;
       }
       break;
-
-    case 5:
-      switch (l) {
-      case 0:
-        fprintf(f, "CJMPz\t0x%.8x", INT);
-        break;
-
-      case 1:
-        fprintf(f, "CJMPnz\t0x%.8x", INT);
-        break;
-
-      case 2:
-        fprintf(f, "BEGIN\t%d ", INT);
-        fprintf(f, "%d", INT);
-        break;
-
-      case 3:
-        fprintf(f, "CBEGIN\t%d ", INT);
-        fprintf(f, "%d", INT);
-        break;
-
-      case 4:
-        fprintf(f, "CLOSURE\t0x%.8x", INT);
-        {
-          int n = INT;
-          for (int i = 0; i < n; i++) {
-            switch (BYTE) {
-            case 0:
-              fprintf(f, "G(%d)", INT);
-              break;
-            case 1:
-              fprintf(f, "L(%d)", INT);
-              break;
-            case 2:
-              fprintf(f, "A(%d)", INT);
-              break;
-            case 3:
-              fprintf(f, "C(%d)", INT);
-              break;
-            default:
-              MATCH_FAIL;
-            }
-          }
-        };
-        break;
-
-      case 5:
-        fprintf(f, "CALLC\t%d", INT);
-        break;
-
-      case 6:
-        fprintf(f, "CALL\t0x%.8x ", INT);
-        fprintf(f, "%d", INT);
-        break;
-
-      case 7:
-        fprintf(f, "TAG\t%s ", NSTRING);
-        fprintf(f, "%d", INT);
-        break;
-
-      case 8:
-        fprintf(f, "ARRAY\t%d", INT);
-        break;
-
-      case 9:
-        fprintf(f, "FAIL\t%d", INT);
-        fprintf(f, "%d", INT);
-        break;
-
-      case 10:
-        fprintf(f, "LINE\t%d", INT);
-        break;
-
-      default:
-        MATCH_FAIL;
-      }
+    case CJMPz:
+      fprintf(f, "CJMPz\t0x%.8x", INT);
       break;
-
-    case 6:
+    case CJMPnz:
+      fprintf(f, "CJMPnz\t0x%.8x", INT);
+      break;
+    case BEGIN:
+      fprintf(f, "BEGIN\t%d ", INT);
+      fprintf(f, "%d", INT);
+      break;
+    case CBEGIN:
+      fprintf(f, "CBEGIN\t%d ", INT);
+      fprintf(f, "%d", INT);
+      break;
+    case CLOSURE:
+      fprintf(f, "CLOSURE\t0x%.8x", INT);
+      {
+        int n = INT;
+        for (int i = 0; i < n; i++) {
+          switch (BYTE) {
+          case 0:
+            fprintf(f, "G(%d)", INT);
+            break;
+          case 1:
+            fprintf(f, "L(%d)", INT);
+            break;
+          case 2:
+            fprintf(f, "A(%d)", INT);
+            break;
+          case 3:
+            fprintf(f, "C(%d)", INT);
+            break;
+          default:
+            MATCH_FAIL;
+          }
+        }
+      };
+      break;
+    case CALLC:
+      fprintf(f, "CALLC\t%d", INT);
+      break;
+    case CALL:
+      fprintf(f, "CALL\t0x%.8x ", INT);
+      fprintf(f, "%d", INT);
+      break;
+    case TAG:
+      fprintf(f, "TAG\t%s ", NSTRING);
+      fprintf(f, "%d", INT);
+      break;
+    case ARRAY:
+      fprintf(f, "ARRAY\t%d", INT);
+      break;
+    case FAIL:
+      fprintf(f, "FAIL\t%d", INT);
+      fprintf(f, "%d", INT);
+      break;
+    case LINE:
+      fprintf(f, "LINE\t%d", INT);
+      break;
+    case PATT:
       fprintf(f, "PATT\t%s", pats[l]);
       break;
-
-    case 7: {
-      switch (l) {
-      case 0:
-        fprintf(f, "CALL\tLread");
-        break;
-
-      case 1:
-        fprintf(f, "CALL\tLwrite");
-        break;
-
-      case 2:
-        fprintf(f, "CALL\tLlength");
-        break;
-
-      case 3:
-        fprintf(f, "CALL\tLstring");
-        break;
-
-      case 4:
-        fprintf(f, "CALL\tBarray\t%d", INT);
-        break;
-
-      default:
-        MATCH_FAIL;
-      }
-    } break;
-
+    case LREAD:
+      fprintf(f, "CALL\tLread");
+      break;
+    case LWRITE:
+      fprintf(f, "CALL\tLwrite");
+      break;
+    case LLENGTH:
+      fprintf(f, "CALL\tLlength");
+      break;
+    case LSTRING:
+      fprintf(f, "CALL\tLstring");
+      break;
+    case BARRAY:
+      fprintf(f, "CALL\tBarray\t%d", INT);
+      break;
     default:
       MATCH_FAIL;
     }
